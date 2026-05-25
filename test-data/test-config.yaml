@@ -54,3 +54,8 @@ extensions:
     profile: "C:\\Users\\test\\Documents\\PowerShell\\Microsoft.PowerShell_profile.ps1"
     settings:
       theme: "tokyonight"
+  flow-launcher:
+    hotkey: "Alt+Space"
+    theme: "Dark"
+    startFlowLauncherOnSystemStartup: true
+    autoUpdates: true
