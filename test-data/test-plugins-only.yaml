@@ -35,4 +35,8 @@ extensions:
     message: "Python Plugin Integration Test"
   test-echo-js:
     message: "JavaScript Plugin Integration Test"
-  
+  flow-launcher:
+    hotkey: "Alt+Space"
+    theme: "Dark"
+    startFlowLauncherOnSystemStartup: true
+    autoUpdates: true
