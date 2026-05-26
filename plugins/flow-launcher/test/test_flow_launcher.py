@@ -63,7 +63,7 @@ def test_check_installed_true(mock_isdir, mock_getenv):
     
     response = plugin.check_installed({}, "req-1")
     assert response["success"] is True
-    assert response["data"]["installed"] is True
+    assert response["data"] is True
 
 
 # --- Protocol tests (subprocess integration) ---
