@@ -168,7 +168,6 @@ def main():
     except Exception as e:
         response["error"] = f"Internal Script Error: {str(e)}"
 
-    # Ensure valid JSON on single line is written to stdout
     sys.stdout.write(json.dumps(response) + "\n")
     sys.stdout.flush()
 
