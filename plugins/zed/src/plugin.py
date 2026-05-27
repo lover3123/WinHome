@@ -3,17 +3,26 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 
 
-PLUGIN_NAME = "opencode"
-CONFIG_DIR = os.path.join(".config", "opencode")
-CONFIG_FILE = "opencode.json"
-PATH_ARG_KEYS = {
-    "projectRoot",
-    "project_root",
+PLUGIN_NAME = "zed"
+SETTINGS_FILE = "settings.json"
+NON_SETTING_ARG_KEYS = {
     "configPath",
     "config_path",
+}
+INT_SETTING_KEYS = {
+    "buffer_font_size",
+    "font_size",
+    "tab_size",
+}
+BOOL_SETTING_KEYS = {
+    "vim_mode",
+    "relative_line_numbers",
+    "copilot",
 }
 
 
@@ -85,6 +94,36 @@ def strip_jsonc_comments(text: str) -> str:
     return "".join(output)
 
 
+def appdata_dir() -> str:
+    appdata = os.getenv("APPDATA")
+    if appdata:
+        return appdata
+
+    userprofile = os.getenv("USERPROFILE")
+    if userprofile:
+        return os.path.join(userprofile, "AppData", "Roaming")
+
+    return str(Path.home() / "AppData" / "Roaming")
+
+
+def expand_path(path: str) -> str:
+    return os.path.abspath(os.path.expandvars(os.path.expanduser(path)))
+
+
+def get_config_path(args: dict, context: dict) -> str:
+    explicit_path = (
+        args.get("configPath")
+        or args.get("config_path")
+        or context.get("configPath")
+        or context.get("config_path")
+    )
+
+    if explicit_path:
+        return expand_path(str(explicit_path))
+
+    return os.path.join(appdata_dir(), "Zed", SETTINGS_FILE)
+
+
 def read_jsonc(file_path: str) -> dict:
     if not os.path.exists(file_path):
         return {}
@@ -104,47 +143,37 @@ def read_jsonc(file_path: str) -> dict:
         return {}
     except Exception as exc:
         log(f"Warning: could not parse {file_path}: {exc}")
+        backup_corrupt_file(file_path)
         return {}
+
+
+def backup_corrupt_file(file_path: str) -> None:
+    backup_path = f"{file_path}.corrupt-{uuid.uuid4()}.bak"
+    try:
+        shutil.copy2(file_path, backup_path)
+        log(f"Backed up unreadable config to: {backup_path}")
+    except Exception as exc:
+        log(f"Warning: could not back up unreadable config: {exc}")
 
 
 def write_json(file_path: str, data: dict) -> None:
     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    tmp_path = f"{file_path}.tmp"
-
-    with open(tmp_path, "w", encoding="utf-8") as config_file:
-        json.dump(data, config_file, indent=2)
-        config_file.write("\n")
-
-    os.replace(tmp_path, file_path)
-
-
-def user_home() -> str:
-    return os.getenv("USERPROFILE") or str(Path.home())
-
-
-def get_config_path(args: dict, context: dict) -> str:
-    explicit_path = (
-        args.get("configPath")
-        or args.get("config_path")
-        or context.get("configPath")
-        or context.get("config_path")
+    temp_fd, temp_path = tempfile.mkstemp(
+        prefix="zed-",
+        suffix=".tmp",
+        dir=os.path.dirname(file_path),
     )
-    if explicit_path:
-        return os.path.abspath(os.path.expandvars(os.path.expanduser(str(explicit_path))))
 
-    project_root = (
-        args.get("projectRoot")
-        or args.get("project_root")
-        or context.get("projectRoot")
-        or context.get("project_root")
-    )
-    if project_root:
-        return os.path.join(
-            os.path.abspath(os.path.expandvars(os.path.expanduser(str(project_root)))),
-            CONFIG_FILE,
-        )
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as config_file:
+            json.dump(data, config_file, indent=2)
+            config_file.write("\n")
 
-    return os.path.join(user_home(), CONFIG_DIR, CONFIG_FILE)
+        os.replace(temp_path, file_path)
+    except Exception:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        raise
 
 
 def desired_config_from_args(args: dict) -> dict:
@@ -152,23 +181,60 @@ def desired_config_from_args(args: dict) -> dict:
         return {}
 
     if "settings" in args and isinstance(args["settings"], dict):
-        return copy.deepcopy(args["settings"])
+        return normalize_config(copy.deepcopy(args["settings"]))
 
-    return {
+    desired = {
         key: copy.deepcopy(value)
         for key, value in args.items()
-        if key not in PATH_ARG_KEYS
+        if key not in NON_SETTING_ARG_KEYS
     }
+    return normalize_config(desired)
+
+
+def normalize_scalar(key: str, value):
+    if not isinstance(value, str):
+        return value
+
+    stripped = value.strip()
+    lowered = stripped.lower()
+
+    if key in BOOL_SETTING_KEYS or lowered in {"true", "false"}:
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+
+    if key in INT_SETTING_KEYS:
+        try:
+            return int(stripped)
+        except ValueError:
+            return value
+
+    return value
+
+
+def normalize_config(config: dict) -> dict:
+    normalized = {}
+
+    for key, value in config.items():
+        if isinstance(value, dict):
+            normalized[key] = normalize_config(value)
+        elif isinstance(value, list):
+            normalized[key] = [
+                normalize_config(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            normalized[key] = normalize_scalar(key, value)
+
+    return normalized
 
 
 def deep_merge(target: dict, source: dict) -> bool:
     changed = False
 
     for key, value in source.items():
-        if (
-            isinstance(value, dict)
-            and isinstance(target.get(key), dict)
-        ):
+        if isinstance(value, dict) and isinstance(target.get(key), dict):
             changed = deep_merge(target[key], value) or changed
             continue
 
@@ -180,8 +246,7 @@ def deep_merge(target: dict, source: dict) -> bool:
 
 
 def check_installed(args: dict, request_id: str) -> dict:
-    installed = shutil.which("opencode") is not None
-
+    installed = shutil.which("zed.exe") is not None or shutil.which("zed") is not None
     return response(
         request_id,
         success=True,
@@ -211,7 +276,7 @@ def apply_config(args: dict, context: dict, request_id: str) -> dict:
             return response(request_id, success=True, changed=True)
 
         write_json(config_path, next_config)
-        log(f"Updated opencode config: {config_path}")
+        log(f"Updated Zed config: {config_path}")
 
         return response(request_id, success=True, changed=True)
 
