@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import uuid
+import tempfile
 
 def log(msg):
     sys.stderr.write(f"[flow-launcher-plugin] {msg}\n")
@@ -34,10 +35,11 @@ def read_json(file_path):
 
 def write_json(file_path, data):
     """Writes the JSON config atomically and handles missing directories."""
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-    temp_path = file_path + ".tmp"
+    dir_name = os.path.dirname(file_path)
+    os.makedirs(dir_name, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(dir=dir_name)
     try:
-        with open(temp_path, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
         os.replace(temp_path, file_path)
     except Exception:
@@ -77,6 +79,14 @@ def apply_config(args, context, request_id):
     
     # Extract settings per the JSON protocol
     settings_to_apply = args.get("settings", {})
+    
+    if not isinstance(settings_to_apply, dict):
+        return {
+            "requestId": request_id,
+            "success": False,
+            "changed": False,
+            "error": "settings must be an object",
+        }
 
     try:
         settings_path = get_settings_path()
@@ -131,6 +141,14 @@ def main():
     """Main JSON-over-stdio communication loop."""
     input_data = sys.stdin.read()
     if not input_data:
+        response = {
+            "requestId": "unknown", 
+            "success": False, 
+            "changed": False, 
+            "error": "Empty stdin received."
+        }
+        sys.stdout.write(json.dumps(response) + "\n")
+        sys.stdout.flush()
         return
 
     try:
